@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::env;
 use serde::Deserialize;
 use serde::Serialize;
+use log::{info, warn};
+use env_logger;
 
-// Based on https://docs.rs/csv/latest/csv/tutorial/index.html
+// CSV & Serde usage is based on https://docs.rs/csv/latest/csv/tutorial/index.html
 
 type ClientID = u32;
 
@@ -25,8 +27,6 @@ struct Client {
     locked: bool,
 }
 
-
-
 fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>) {
     let client = clients.entry(tr.client).or_insert(Client {
         id: tr.client,
@@ -46,16 +46,18 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
                 client.available -= tr.amount;
                 client.total -= tr.amount;
             } else {
-                // println!("Insufficient funds for withdrawal: {:?}", tr);
+                info!("Insufficient funds for withdrawal: {:?}", tr);
             }
         }
         _ => {
-            // println!("Unknown transaction type: {:?}", tr);
+            warn!("Unknown transaction type: {:?}", tr);
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+    
     let args: Vec<String> = env::args().collect();
     let input = &args[1];
     let csv_text = std::fs::read_to_string(input).expect("Error reading file");
