@@ -13,7 +13,7 @@
                     "run",
                     "--bin=process-transactions",
                     "--",
-                    "transactions.csv",
+                    "inputs/02-dispute-transactions.csv",
                     ">",
                     "accounts.csv"
                 ],

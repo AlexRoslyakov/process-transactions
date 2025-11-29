@@ -7,15 +7,16 @@ use env_logger;
 
 // CSV & Serde usage is based on https://docs.rs/csv/latest/csv/tutorial/index.html
 
-type ClientID = u32;
+type ClientID = u16;
+type TransactionID = u32;
 
 #[derive(Debug, Deserialize)]
 struct Transaction {
     #[serde(rename = "type")]
     tr_type: String,
     client: ClientID, 
-    tx: u64, 
-    amount: f64
+    tx: TransactionID, 
+    amount: Option<f64>
 }
 
 #[derive(Debug, Serialize)]
@@ -27,7 +28,7 @@ struct Client {
     locked: bool,
 }
 
-fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>) {
+fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>, processed_transactions: &HashMap<TransactionID, Transaction>) {
     let client = clients.entry(tr.client).or_insert(Client {
         id: tr.client,
         available: 0.0,
@@ -38,15 +39,41 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
 
     match tr.tr_type.as_str() {
         "deposit" => {
-            client.available += tr.amount;
-            client.total += tr.amount;
+            let amount = match tr.amount {
+                Some(a) => a,
+                None => {
+                    warn!("Withdrawal transaction missing amount: {:?}", tr);
+                    return;
+                }
+            };
+            client.available += amount;
+            client.total += amount;
         }
         "withdrawal" => {
-            if client.available >= tr.amount {
-                client.available -= tr.amount;
-                client.total -= tr.amount;
+            let amount = match tr.amount {
+                Some(a) => a,
+                None => {
+                    warn!("Withdrawal transaction missing amount: {:?}", tr);
+                    return;
+                }
+            };
+            if client.available >= amount {
+                client.available -= amount;
+                client.total -= amount;
             } else {
                 info!("Insufficient funds for withdrawal: {:?}", tr);
+            }
+        }
+        "dispute" => {
+            if let Some(original_tr) = processed_transactions.get(&tr.tx) {
+                if let Some(amount) = original_tr.amount {
+                    client.available -= amount;
+                    client.held += amount;
+                } else {
+                    warn!("Dispute on transaction without amount: {:?}", tr);
+                }
+            } else {
+                warn!("Dispute on unknown transaction: {:?}", tr);
             }
         }
         _ => {
@@ -57,7 +84,7 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    
+
     let args: Vec<String> = env::args().collect();
     let input = &args[1];
     let csv_text = std::fs::read_to_string(input).expect("Error reading file");
@@ -68,10 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .from_reader(csv_text.as_bytes());
 
     let mut clients: HashMap<ClientID, Client> = HashMap::new();
-
+    let mut processed_transactions: HashMap<TransactionID, Transaction> = HashMap::new();
     for result in rdr.deserialize::<Transaction>() {
         let tr: Transaction = result?;
-        process_transaction(&tr, &mut clients);
+        process_transaction(&tr, &mut clients, &processed_transactions);
+        processed_transactions.insert(tr.tx, tr);
     }
 
     let mut wtr = csv::Writer::from_writer(std::io::stdout());
