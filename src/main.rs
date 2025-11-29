@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::env;
 use serde::Deserialize;
 use serde::Serialize;
 use log::{info, warn};
 use env_logger;
+
 
 // CSV & Serde usage is based on https://docs.rs/csv/latest/csv/tutorial/index.html
 
@@ -28,7 +30,7 @@ struct Client {
     locked: bool,
 }
 
-fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>, processed_transactions: &HashMap<TransactionID, Transaction>) {
+fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>, processed_transactions: &HashMap<TransactionID, Transaction>, disputed_transactions: &mut HashSet<TransactionID>) {
     let client = clients.entry(tr.client).or_insert(Client {
         id: tr.client,
         available: 0.0,
@@ -69,11 +71,29 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
                 if let Some(amount) = original_tr.amount {
                     client.available -= amount;
                     client.held += amount;
+                    disputed_transactions.insert(tr.tx);
                 } else {
                     warn!("Dispute on transaction without amount: {:?}", tr);
                 }
             } else {
                 warn!("Dispute on unknown transaction: {:?}", tr);
+            }
+        }
+        "resolve" => {
+            if let Some(original_tr) = processed_transactions.get(&tr.tx) {
+                if !disputed_transactions.contains(&tr.tx) {
+                    warn!("Resolve on non-disputed transaction: {:?}", tr);
+                    return;
+                }
+                if let Some(amount) = original_tr.amount {
+                    client.held -= amount;
+                    client.available += amount;
+                    disputed_transactions.remove(&tr.tx);
+                } else {
+                    warn!("Resolve on transaction without amount: {:?}", tr);
+                }
+            } else {
+                warn!("Resolve on unknown transaction: {:?}", tr);
             }
         }
         _ => {
@@ -96,9 +116,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut clients: HashMap<ClientID, Client> = HashMap::new();
     let mut processed_transactions: HashMap<TransactionID, Transaction> = HashMap::new();
+    let mut disputed_transactions: HashSet<TransactionID> = HashSet::new();
     for result in rdr.deserialize::<Transaction>() {
         let tr: Transaction = result?;
-        process_transaction(&tr, &mut clients, &processed_transactions);
+        process_transaction(&tr, &mut clients, &processed_transactions, &mut disputed_transactions);
         processed_transactions.insert(tr.tx, tr);
     }
 
