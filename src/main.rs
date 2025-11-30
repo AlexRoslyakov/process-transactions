@@ -53,75 +53,79 @@ impl Model {
 
         let sign = if tr.tr_type == "deposit" { 1.0 } else { -1.0 };
 
-        if let Some(amount) = tr.amount {
-            // TBD: likely should check for locked account here, especially for withdrawal (no requirement in spec)
-            if client.available + sign*amount > 0.0 {
-                client.available += sign*amount;
-                client.total += sign*amount;
-            }
-            else {
-                info!("Insufficient funds for withdrawal: {:?}", tr);
-            }
-        } else {
+        let Some(amount) = tr.amount else {
             warn!("Transaction missing amount: {:?}", tr);
+            return;
+        };
+
+        // TBD: likely should check for locked account here, especially for withdrawal (no requirement in spec)
+        if client.available + sign*amount > 0.0 {
+            client.available += sign*amount;
+            client.total += sign*amount;
         }
+        else {
+            info!("Insufficient funds for withdrawal: {:?}", tr);
+        }
+        
         self.revertable_transactions.insert(tr.tx, tr);
     }
 
     fn process_dispute_resolve_chargeback(&mut self, tr: Transaction) {
-        if let Some(original_tr) = self.revertable_transactions.get(&tr.tx) {
-            if original_tr.client != tr.client {
-                warn!("Dispute/Resolve/Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
+        let Some(original_tr) = self.revertable_transactions.get(&tr.tx) else {
+            warn!("Dispute/Resolve/Chargeback on unknown transaction: {:?}", tr);
+            return;
+        };
+
+        if original_tr.client != tr.client {
+            warn!("Dispute/Resolve/Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
+            return;
+        }
+        if original_tr.tr_type != "deposit" {
+            warn!("Dispute/Resolve/Chargeback on non-deposit transaction: {:?}", tr);
+            return;
+        }
+        if tr.tr_type == "dispute" {
+            if self.disputed_transactions.contains(&tr.tx) {
+                warn!("Transaction already disputed: {:?}", tr);
                 return;
-            }
-            if original_tr.tr_type != "deposit" {
-                warn!("Dispute/Resolve/Chargeback on non-deposit transaction: {:?}", tr);
-                return;
-            }
-            if tr.tr_type == "dispute" {
-                if self.disputed_transactions.contains(&tr.tx) {
-                    warn!("Transaction already disputed: {:?}", tr);
-                    return;
-                }
-            } else {
-                if !self.disputed_transactions.contains(&tr.tx) {
-                    warn!("Resolve/Chargeback on non-disputed transaction: {:?}", tr);
-                    return;
-                }
-            }
-            if let Some(amount) = original_tr.amount {
-                if let Some(client) = self.clients.get_mut(&tr.client) {
-                    match tr.tr_type.as_str() {
-                        "dispute" => {
-                            client.available -= amount;
-                            client.held += amount;
-                            self.disputed_transactions.insert(tr.tx);
-                        }
-                        "resolve" => {
-                            client.held -= amount;
-                            client.available += amount;
-                            self.disputed_transactions.remove(&tr.tx);
-                        }
-                        "chargeback" => {
-                            client.held -= amount;
-                            client.total -= amount;
-                            self.disputed_transactions.remove(&tr.tx);
-                            client.locked = true;
-                        }
-                        _ => {
-                            warn!("Unexpected transaction type: {:?}", tr);
-                        }
-                    }
-                }
-                else {
-                    warn!("Client not found for Dispute/Resolve/Chargeback: {:?}", tr);
-                    return;
-                }
-            } else {
-                warn!("Dispute/Resolve/Chargeback on transaction without amount: {:?}", tr);
             }
         } else {
-            warn!("Dispute/Resolve/Chargeback on unknown transaction: {:?}", tr);
+            if !self.disputed_transactions.contains(&tr.tx) {
+                warn!("Resolve/Chargeback on non-disputed transaction: {:?}", tr);
+                return;
+            }
+        }
+
+        let Some(amount) = original_tr.amount else {
+            warn!("Dispute/Resolve/Chargeback {:?} on transaction without amount: {:?}", tr, original_tr);
+            return;
+        };
+
+        let Some(client) = self.clients.get_mut(&tr.client) else {
+            warn!("Client not found for Dispute/Resolve/Chargeback: {:?}", tr);
+            return;
+        };
+
+        match tr.tr_type.as_str() {
+            "dispute" => {
+                client.available -= amount;
+                client.held += amount;
+                self.disputed_transactions.insert(tr.tx);
+            }
+            "resolve" => {
+                client.held -= amount;
+                client.available += amount;
+                self.disputed_transactions.remove(&tr.tx);
+            }
+            "chargeback" => {
+                client.held -= amount;
+                client.total -= amount;
+                self.disputed_transactions.remove(&tr.tx);
+                client.locked = true;
+            }
+            _ => {
+                warn!("Unexpected transaction type: {:?}", tr);
+            }
         }
     }
 
