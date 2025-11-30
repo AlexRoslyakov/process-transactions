@@ -10,15 +10,13 @@ type ClientID = u16;
 type TransactionID = u32;
 
 #[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 enum TransactionType {
     Deposit,
     Withdrawal,
     Dispute,
     Resolve,
     Chargeback,
-    #[serde(untagged)]
-    Unknown(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,9 +147,6 @@ impl Model {
             TransactionType::Dispute | TransactionType::Resolve | TransactionType::Chargeback => {
                 self.process_dispute_resolve_chargeback(tr);
             }
-            TransactionType::Unknown(type_string) => {
-                warn!("Unknown transaction type: {}", type_string);
-            }
         }
     }
 
@@ -163,8 +158,11 @@ impl Model {
             .from_reader(csv_text.as_bytes());
 
         for result in rdr.deserialize::<Transaction>() {
-            let tr: Transaction = result?;
-            self.process_transaction(tr);
+            if let Ok(tr) = result {
+                self.process_transaction(tr);
+            } else {
+                warn!("Error deserializing transaction: {:?}", result);
+            }
         }
 
         Ok(())
@@ -220,6 +218,11 @@ mod tests {
     #[test]
     fn test_chargeback() {
         run_case("05-transactions-chargeback", "05-accounts-chargeback")
+    }
+
+    #[test]
+    fn test_unexpected() {
+        run_case("06-transactions-unexpected", "06-accounts-unexpected")
     }
 
     fn run_case(input_name: &str, output_name: &str) {
