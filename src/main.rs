@@ -9,10 +9,22 @@ use env_logger;
 type ClientID = u16;
 type TransactionID = u32;
 
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TransactionType {
+    Deposit,
+    Withdrawal,
+    Dispute,
+    Resolve,
+    Chargeback,
+    #[serde(untagged)]
+    Unknown(String),
+}
+
 #[derive(Debug, Deserialize)]
 struct Transaction {
     #[serde(rename = "type")]
-    tr_type: String,
+    tr_type: TransactionType,
     client: ClientID, 
     tx: TransactionID, 
     amount: Option<f64>
@@ -51,7 +63,7 @@ impl Model {
             locked: false,
         });
 
-        let sign = if tr.tr_type == "deposit" { 1.0 } else { -1.0 };
+        let sign = if tr.tr_type == TransactionType::Deposit { 1.0 } else { -1.0 };
 
         let Some(amount) = tr.amount else {
             warn!("Transaction missing amount: {:?}", tr);
@@ -66,7 +78,7 @@ impl Model {
         else {
             info!("Insufficient funds for withdrawal: {:?}", tr);
         }
-        
+
         self.revertable_transactions.insert(tr.tx, tr);
     }
 
@@ -80,11 +92,11 @@ impl Model {
             warn!("Dispute/Resolve/Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
             return;
         }
-        if original_tr.tr_type != "deposit" {
+        if original_tr.tr_type != TransactionType::Deposit {
             warn!("Dispute/Resolve/Chargeback on non-deposit transaction: {:?}", tr);
             return;
         }
-        if tr.tr_type == "dispute" {
+        if tr.tr_type == TransactionType::Dispute {
             if self.disputed_transactions.contains(&tr.tx) {
                 warn!("Transaction already disputed: {:?}", tr);
                 return;
@@ -106,18 +118,18 @@ impl Model {
             return;
         };
 
-        match tr.tr_type.as_str() {
-            "dispute" => {
+        match tr.tr_type {
+            TransactionType::Dispute => {
                 client.available -= amount;
                 client.held += amount;
                 self.disputed_transactions.insert(tr.tx);
             }
-            "resolve" => {
+            TransactionType::Resolve => {
                 client.held -= amount;
                 client.available += amount;
                 self.disputed_transactions.remove(&tr.tx);
             }
-            "chargeback" => {
+            TransactionType::Chargeback => {
                 client.held -= amount;
                 client.total -= amount;
                 self.disputed_transactions.remove(&tr.tx);
@@ -130,15 +142,15 @@ impl Model {
     }
 
     fn process_transaction(&mut self, tr: Transaction) {
-        match tr.tr_type.as_str() {
-            "deposit" | "withdrawal" => {
+        match tr.tr_type {
+            TransactionType::Deposit | TransactionType::Withdrawal => {
                 self.process_revertable_transaction(tr);
             }
-            "dispute" | "resolve" | "chargeback" => {
+            TransactionType::Dispute | TransactionType::Resolve | TransactionType::Chargeback => {
                 self.process_dispute_resolve_chargeback(tr);
             }
-            _ => {
-                warn!("Unknown transaction type: {:?}", tr);
+            TransactionType::Unknown(type_string) => {
+                warn!("Unknown transaction type: {}", type_string);
             }
         }
     }
