@@ -42,7 +42,7 @@ impl Model {
         }
     }
 
-    fn process_revertable_transaction(&mut self, tr: Transaction, sign: f64) {
+    fn process_revertable_transaction(&mut self, tr: Transaction) {
         let client = self.clients.entry(tr.client).or_insert(Client {
             client: tr.client,
             available: 0.0,
@@ -50,6 +50,8 @@ impl Model {
             total: 0.0,
             locked: false,
         });
+
+        let sign = if tr.tr_type == "deposit" { 1.0 } else { -1.0 };
 
         if let Some(amount) = tr.amount {
             // TBD: likely should check for locked account here, especially for withdrawal (no requirement in spec)
@@ -125,19 +127,10 @@ impl Model {
 
     fn process_transaction(&mut self, tr: Transaction) {
         match tr.tr_type.as_str() {
-            "deposit" => {
-                self.process_revertable_transaction(tr, 1.0);
+            "deposit" | "withdrawal" => {
+                self.process_revertable_transaction(tr);
             }
-            "withdrawal" => {
-                self.process_revertable_transaction(tr, -1.0);
-            }
-            "dispute" => {
-                self.process_dispute_resolve_chargeback(tr);
-            }
-            "resolve" => {
-                self.process_dispute_resolve_chargeback(tr);
-            }
-            "chargeback" => {
+            "dispute" | "resolve" | "chargeback" => {
                 self.process_dispute_resolve_chargeback(tr);
             }
             _ => {
