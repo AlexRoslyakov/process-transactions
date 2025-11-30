@@ -1,1 +1,1 @@
-cargo run -- transactions.csv > accounts.csv
+cargo run -- cases/01-transactions-base.csv > accounts.csv
