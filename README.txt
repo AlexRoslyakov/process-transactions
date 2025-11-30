@@ -15,9 +15,9 @@
 
 # AI usage:
 * Code was created in VSCode with Copilot (free tier) enabled
-* I've not used Copilot promts, only used autocomletes
+* I've not used Copilot prompts, only used autocompletes
 * Copilot predicted logic very well, for example for transaction logic, but had no checks
 * When I start to add checks it autocompletes them right too
-* Looks like Copilot knows this excercise well, so likely can generate whole solution on such prompt (not tried)
+* Looks like Copilot knows this exercise well, so likely can generate whole solution on such prompt (not tried)
 * When adding tests Copilot had more mistakes, but helped in refactoring
 
