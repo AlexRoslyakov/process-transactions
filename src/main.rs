@@ -29,7 +29,7 @@ struct Client {
 
 struct Model {
     clients: HashMap<ClientID, Client>,
-    processed_transactions: HashMap<TransactionID, Transaction>,
+    revertable_transactions: HashMap<TransactionID, Transaction>,
     disputed_transactions: HashSet<TransactionID>
 }
 
@@ -37,12 +37,12 @@ impl Model {
     fn new() -> Self {
         Model {
             clients: HashMap::new(),
-            processed_transactions: HashMap::new(),
+            revertable_transactions: HashMap::new(),
             disputed_transactions: HashSet::new(),
         }
     }
 
-    fn process_transaction(&mut self, tr: &Transaction) {
+    fn process_revertable_transaction(&mut self, tr: Transaction, sign: f64) {
         let client = self.clients.entry(tr.client).or_insert(Client {
             client: tr.client,
             available: 0.0,
@@ -51,98 +51,94 @@ impl Model {
             locked: false,
         });
 
+        if let Some(amount) = tr.amount {
+            // TBD: likely should check for locked account here, especially for withdrawal (no requirement in spec)
+            if client.available + sign*amount > 0.0 {
+                client.available += sign*amount;
+                client.total += sign*amount;
+            }
+            else {
+                info!("Insufficient funds for withdrawal: {:?}", tr);
+            }
+        } else {
+            warn!("Transaction missing amount: {:?}", tr);
+        }
+        self.revertable_transactions.insert(tr.tx, tr);
+    }
+
+    fn process_dispute_resolve_chargeback(&mut self, tr: Transaction) {
+        if let Some(original_tr) = self.revertable_transactions.get(&tr.tx) {
+            if original_tr.client != tr.client {
+                warn!("Dispute/Resolve/Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                return;
+            }
+            if original_tr.tr_type != "deposit" {
+                warn!("Dispute/Resolve/Chargeback on non-deposit transaction: {:?}", tr);
+                return;
+            }
+            if tr.tr_type == "dispute" {
+                if self.disputed_transactions.contains(&tr.tx) {
+                    warn!("Transaction already disputed: {:?}", tr);
+                    return;
+                }
+            } else {
+                if !self.disputed_transactions.contains(&tr.tx) {
+                    warn!("Resolve/Chargeback on non-disputed transaction: {:?}", tr);
+                    return;
+                }
+            }
+            if let Some(amount) = original_tr.amount {
+                if let Some(client) = self.clients.get_mut(&tr.client) {
+                    match tr.tr_type.as_str() {
+                        "dispute" => {
+                            client.available -= amount;
+                            client.held += amount;
+                            self.disputed_transactions.insert(tr.tx);
+                        }
+                        "resolve" => {
+                            client.held -= amount;
+                            client.available += amount;
+                            self.disputed_transactions.remove(&tr.tx);
+                        }
+                        "chargeback" => {
+                            client.held -= amount;
+                            client.total -= amount;
+                            self.disputed_transactions.remove(&tr.tx);
+                            client.locked = true;
+                        }
+                        _ => {
+                            warn!("Unexpected transaction type: {:?}", tr);
+                        }
+                    }
+                }
+                else {
+                    warn!("Client not found for Dispute/Resolve/Chargeback: {:?}", tr);
+                    return;
+                }
+            } else {
+                warn!("Dispute/Resolve/Chargeback on transaction without amount: {:?}", tr);
+            }
+        } else {
+            warn!("Dispute/Resolve/Chargeback on unknown transaction: {:?}", tr);
+        }
+    }
+
+    fn process_transaction(&mut self, tr: Transaction) {
         match tr.tr_type.as_str() {
             "deposit" => {
-                let amount = match tr.amount {
-                    Some(a) => a,
-                    None => {
-                        warn!("Withdrawal transaction missing amount: {:?}", tr);
-                        return;
-                    }
-                };
-                // TBD: likely should check for locked account here (no requirement in spec)
-                client.available += amount;
-                client.total += amount;
+                self.process_revertable_transaction(tr, 1.0);
             }
             "withdrawal" => {
-                let amount = match tr.amount {
-                    Some(a) => a,
-                    None => {
-                        warn!("Withdrawal transaction missing amount: {:?}", tr);
-                        return;
-                    }
-                };
-                if client.available >= amount {
-                    // TBD: likely should check for locked account here (no requirement in spec)
-                    client.available -= amount;
-                    client.total -= amount;
-                } else {
-                    info!("Insufficient funds for withdrawal: {:?}", tr);
-                }
+                self.process_revertable_transaction(tr, -1.0);
             }
             "dispute" => {
-                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
-                    if original_tr.client != tr.client {
-                        warn!("Dispute transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                        return;
-                    }
-                    if self.disputed_transactions.contains(&tr.tx) {
-                        warn!("Transaction already disputed: {:?}", tr);
-                        return;
-                    }
-                    if let Some(amount) = original_tr.amount {
-                        client.available -= amount;
-                        client.held += amount;
-                        self.disputed_transactions.insert(tr.tx);
-                    } else {
-                        warn!("Dispute on transaction without amount: {:?}", tr);
-                    }
-                } else {
-                    warn!("Dispute on unknown transaction: {:?}", tr);
-                }
+                self.process_dispute_resolve_chargeback(tr);
             }
             "resolve" => {
-                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
-                    if original_tr.client != tr.client {
-                        warn!("Resolve transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                        return;
-                    }   
-                    if !self.disputed_transactions.contains(&tr.tx) {
-                        warn!("Resolve on non-disputed transaction: {:?}", tr);
-                        return;
-                    }
-                    if let Some(amount) = original_tr.amount {
-                        client.held -= amount;
-                        client.available += amount;
-                        self.disputed_transactions.remove(&tr.tx);
-                    } else {
-                        warn!("Resolve on transaction without amount: {:?}", tr);
-                    }
-                } else {
-                    warn!("Resolve on unknown transaction: {:?}", tr);
-                }
+                self.process_dispute_resolve_chargeback(tr);
             }
             "chargeback" => {
-                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
-                    if original_tr.client != tr.client {
-                        warn!("Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                        return;
-                    }
-                    if !self.disputed_transactions.contains(&tr.tx) {
-                        warn!("Chargeback on non-disputed transaction: {:?}", tr);
-                        return;
-                    }
-                    if let Some(amount) = original_tr.amount {
-                        client.held -= amount;
-                        client.total -= amount;
-                        client.locked = true;
-                        self.disputed_transactions.remove(&tr.tx);
-                    } else {
-                        warn!("Chargeback on transaction without amount: {:?}, {:?}", tr, original_tr);
-                    }
-                } else {
-                    warn!("Chargeback on unknown transaction: {:?}", tr);
-                }
+                self.process_dispute_resolve_chargeback(tr);
             }
             _ => {
                 warn!("Unknown transaction type: {:?}", tr);
@@ -159,10 +155,7 @@ impl Model {
 
         for result in rdr.deserialize::<Transaction>() {
             let tr: Transaction = result?;
-            self.process_transaction(&tr);
-            if tr.tr_type == "deposit" || tr.tr_type == "withdrawal" {
-                self.processed_transactions.insert(tr.tx, tr);
-            }
+            self.process_transaction(tr);
         }
 
         Ok(())
@@ -196,17 +189,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_one() {
+    fn test_base() {
         run_case("01-transactions-base", "01-accounts-base")
     }
 
     #[test]
-    fn test_all() {
-        run_case("01-transactions-base", "01-accounts-base");
-        run_case("02-transactions-dispute", "02-accounts-dispute");
-        run_case("03-transactions-resolve", "03-accounts-resolve");
-        run_case("04-transactions-resolve-no-dispute", "04-accounts-resolve-no-dispute");
-        run_case("05-transactions-chargeback", "05-accounts-chargeback");
+    fn test_dispute() {
+        run_case("02-transactions-dispute", "02-accounts-dispute")
+    }
+
+    #[test]
+    fn test_resolve() {
+        run_case("03-transactions-resolve", "03-accounts-resolve")
+    }
+
+    #[test]
+    fn test_resolve_no_dispute() {
+        run_case("04-transactions-resolve-no-dispute", "04-accounts-resolve-no-dispute")
+    }
+
+    #[test]
+    fn test_chargeback() {
+        run_case("05-transactions-chargeback", "05-accounts-chargeback")
     }
 
     fn run_case(input_name: &str, output_name: &str) {
