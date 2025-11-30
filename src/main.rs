@@ -225,6 +225,11 @@ mod tests {
         run_case("06-transactions-unexpected", "06-accounts-unexpected")
     }
 
+    #[test]
+    fn test_dispute_wrong_client() {
+        run_case("07-transactions-dispute-wrong-client", "07-accounts-dispute-wrong-client")
+    }
+
     fn run_case(input_name: &str, output_name: &str) {
         let input = format!("cases/{}.csv", input_name);
         let mut model = Model::new();
