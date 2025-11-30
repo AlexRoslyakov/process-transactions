@@ -27,118 +27,10 @@ struct Client {
     locked: bool,
 }
 
-fn process_transaction(tr: &Transaction, model: &mut Model) {
-    let client = model.clients.entry(tr.client).or_insert(Client {
-        client: tr.client,
-        available: 0.0,
-        held: 0.0,
-        total: 0.0,
-        locked: false,
-    });
-
-    match tr.tr_type.as_str() {
-        "deposit" => {
-            let amount = match tr.amount {
-                Some(a) => a,
-                None => {
-                    warn!("Withdrawal transaction missing amount: {:?}", tr);
-                    return;
-                }
-            };
-            // TBD: likely should check for locked account here (no requirement in spec)
-            client.available += amount;
-            client.total += amount;
-        }
-        "withdrawal" => {
-            let amount = match tr.amount {
-                Some(a) => a,
-                None => {
-                    warn!("Withdrawal transaction missing amount: {:?}", tr);
-                    return;
-                }
-            };
-            if client.available >= amount {
-                // TBD: likely should check for locked account here (no requirement in spec)
-                client.available -= amount;
-                client.total -= amount;
-            } else {
-                info!("Insufficient funds for withdrawal: {:?}", tr);
-            }
-        }
-        "dispute" => {
-            if let Some(original_tr) = model.processed_transactions.get(&tr.tx) {
-                if original_tr.client != tr.client {
-                    warn!("Dispute transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                    return;
-                }
-                if model.disputed_transactions.contains(&tr.tx) {
-                    warn!("Transaction already disputed: {:?}", tr);
-                    return;
-                }
-                if let Some(amount) = original_tr.amount {
-                    client.available -= amount;
-                    client.held += amount;
-                    model.disputed_transactions.insert(tr.tx);
-                } else {
-                    warn!("Dispute on transaction without amount: {:?}", tr);
-                }
-            } else {
-                warn!("Dispute on unknown transaction: {:?}", tr);
-            }
-        }
-        "resolve" => {
-            if let Some(original_tr) = model.processed_transactions.get(&tr.tx) {
-                if original_tr.client != tr.client {
-                    warn!("Resolve transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                    return;
-                }   
-                if !model.disputed_transactions.contains(&tr.tx) {
-                    warn!("Resolve on non-disputed transaction: {:?}", tr);
-                    return;
-                }
-                if let Some(amount) = original_tr.amount {
-                    client.held -= amount;
-                    client.available += amount;
-                    model.disputed_transactions.remove(&tr.tx);
-                } else {
-                    warn!("Resolve on transaction without amount: {:?}", tr);
-                }
-            } else {
-                warn!("Resolve on unknown transaction: {:?}", tr);
-            }
-        }
-        "chargeback" => {
-            if let Some(original_tr) = model.processed_transactions.get(&tr.tx) {
-                if original_tr.client != tr.client {
-                    warn!("Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
-                    return;
-                }
-                if !model.disputed_transactions.contains(&tr.tx) {
-                    warn!("Chargeback on non-disputed transaction: {:?}", tr);
-                    return;
-                }
-                if let Some(amount) = original_tr.amount {
-                    client.held -= amount;
-                    client.total -= amount;
-                    client.locked = true;
-                    model.disputed_transactions.remove(&tr.tx);
-                } else {
-                    warn!("Chargeback on transaction without amount: {:?}, {:?}", tr, original_tr);
-                }
-            } else {
-                warn!("Chargeback on unknown transaction: {:?}", tr);
-            }
-        }
-        _ => {
-            warn!("Unknown transaction type: {:?}", tr);
-        }
-    }
-}
-
 struct Model {
     clients: HashMap<ClientID, Client>,
     processed_transactions: HashMap<TransactionID, Transaction>,
-    disputed_transactions: HashSet<TransactionID>,
+    disputed_transactions: HashSet<TransactionID>
 }
 
 impl Model {
@@ -149,34 +41,142 @@ impl Model {
             disputed_transactions: HashSet::new(),
         }
     }
-}
 
-fn process_transactions(input: &String, model: &mut Model) -> Result<(), Box<dyn std::error::Error>> {
-    let csv_text = std::fs::read_to_string(input).expect("Error reading file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .trim(csv::Trim::All)
-        .from_reader(csv_text.as_bytes());
+    fn process_transaction(&mut self, tr: &Transaction) {
+        let client = self.clients.entry(tr.client).or_insert(Client {
+            client: tr.client,
+            available: 0.0,
+            held: 0.0,
+            total: 0.0,
+            locked: false,
+        });
 
-    for result in rdr.deserialize::<Transaction>() {
-        let tr: Transaction = result?;
-        process_transaction(&tr, model);
-        if tr.tr_type == "deposit" || tr.tr_type == "withdrawal" {
-            model.processed_transactions.insert(tr.tx, tr);
+        match tr.tr_type.as_str() {
+            "deposit" => {
+                let amount = match tr.amount {
+                    Some(a) => a,
+                    None => {
+                        warn!("Withdrawal transaction missing amount: {:?}", tr);
+                        return;
+                    }
+                };
+                // TBD: likely should check for locked account here (no requirement in spec)
+                client.available += amount;
+                client.total += amount;
+            }
+            "withdrawal" => {
+                let amount = match tr.amount {
+                    Some(a) => a,
+                    None => {
+                        warn!("Withdrawal transaction missing amount: {:?}", tr);
+                        return;
+                    }
+                };
+                if client.available >= amount {
+                    // TBD: likely should check for locked account here (no requirement in spec)
+                    client.available -= amount;
+                    client.total -= amount;
+                } else {
+                    info!("Insufficient funds for withdrawal: {:?}", tr);
+                }
+            }
+            "dispute" => {
+                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
+                    if original_tr.client != tr.client {
+                        warn!("Dispute transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                        return;
+                    }
+                    if self.disputed_transactions.contains(&tr.tx) {
+                        warn!("Transaction already disputed: {:?}", tr);
+                        return;
+                    }
+                    if let Some(amount) = original_tr.amount {
+                        client.available -= amount;
+                        client.held += amount;
+                        self.disputed_transactions.insert(tr.tx);
+                    } else {
+                        warn!("Dispute on transaction without amount: {:?}", tr);
+                    }
+                } else {
+                    warn!("Dispute on unknown transaction: {:?}", tr);
+                }
+            }
+            "resolve" => {
+                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
+                    if original_tr.client != tr.client {
+                        warn!("Resolve transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                        return;
+                    }   
+                    if !self.disputed_transactions.contains(&tr.tx) {
+                        warn!("Resolve on non-disputed transaction: {:?}", tr);
+                        return;
+                    }
+                    if let Some(amount) = original_tr.amount {
+                        client.held -= amount;
+                        client.available += amount;
+                        self.disputed_transactions.remove(&tr.tx);
+                    } else {
+                        warn!("Resolve on transaction without amount: {:?}", tr);
+                    }
+                } else {
+                    warn!("Resolve on unknown transaction: {:?}", tr);
+                }
+            }
+            "chargeback" => {
+                if let Some(original_tr) = self.processed_transactions.get(&tr.tx) {
+                    if original_tr.client != tr.client {
+                        warn!("Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                        return;
+                    }
+                    if !self.disputed_transactions.contains(&tr.tx) {
+                        warn!("Chargeback on non-disputed transaction: {:?}", tr);
+                        return;
+                    }
+                    if let Some(amount) = original_tr.amount {
+                        client.held -= amount;
+                        client.total -= amount;
+                        client.locked = true;
+                        self.disputed_transactions.remove(&tr.tx);
+                    } else {
+                        warn!("Chargeback on transaction without amount: {:?}, {:?}", tr, original_tr);
+                    }
+                } else {
+                    warn!("Chargeback on unknown transaction: {:?}", tr);
+                }
+            }
+            _ => {
+                warn!("Unknown transaction type: {:?}", tr);
+            }
         }
     }
 
-    Ok(())
-}
+    fn process_transactions(&mut self, input: &String) -> Result<(), Box<dyn std::error::Error>> {
+        let csv_text = std::fs::read_to_string(input).expect("Error reading file");
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .trim(csv::Trim::All)
+            .from_reader(csv_text.as_bytes());
 
-fn print_to_stdout(model: &Model) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = csv::Writer::from_writer(std::io::stdout());
-    for client in model.clients.values() {
-        wtr.serialize(client)?;
+        for result in rdr.deserialize::<Transaction>() {
+            let tr: Transaction = result?;
+            self.process_transaction(&tr);
+            if tr.tr_type == "deposit" || tr.tr_type == "withdrawal" {
+                self.processed_transactions.insert(tr.tx, tr);
+            }
+        }
+
+        Ok(())
     }
-    wtr.flush()?;
 
-    Ok(())
+    fn print_to_stdout(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        for client in self.clients.values() {
+            wtr.serialize(client)?;
+        }
+        wtr.flush()?;
+
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -186,8 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = &args[1];
 
     let mut model = Model::new();
-    process_transactions(input, &mut model)?;
-    print_to_stdout(&model)
+    model.process_transactions(input)?;
+    model.print_to_stdout()
 }
 
 #[cfg(test)]
@@ -212,7 +212,7 @@ mod tests {
     fn run_case(input_name: &str, output_name: &str) {
         let input = format!("cases/{}.csv", input_name);
         let mut model = Model::new();
-        process_transactions(&input, &mut model).expect("Processing failed");
+        model.process_transactions(&input).expect("Processing failed");
 
         let output = format!("cases/{}.csv", output_name);
         let expected_csv = std::fs::read_to_string(output).expect("Error reading expected");
