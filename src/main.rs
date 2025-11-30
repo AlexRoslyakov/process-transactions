@@ -23,7 +23,7 @@ struct Transaction {
 
 #[derive(Debug, Serialize)]
 struct Client {
-    id: ClientID,
+    client: ClientID,
     available: f64,
     held: f64,
     total: f64,
@@ -32,7 +32,7 @@ struct Client {
 
 fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>, processed_transactions: &HashMap<TransactionID, Transaction>, disputed_transactions: &mut HashSet<TransactionID>) {
     let client = clients.entry(tr.client).or_insert(Client {
-        id: tr.client,
+        client: tr.client,
         available: 0.0,
         held: 0.0,
         total: 0.0,
@@ -48,6 +48,7 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
                     return;
                 }
             };
+            // TBD: likely should check for locked account here (no requirement in spec)
             client.available += amount;
             client.total += amount;
         }
@@ -60,6 +61,7 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
                 }
             };
             if client.available >= amount {
+                // TBD: likely should check for locked account here (no requirement in spec)
                 client.available -= amount;
                 client.total -= amount;
             } else {
@@ -68,6 +70,14 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
         }
         "dispute" => {
             if let Some(original_tr) = processed_transactions.get(&tr.tx) {
+                if original_tr.client != tr.client {
+                    warn!("Dispute transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                    return;
+                }
+                if disputed_transactions.contains(&tr.tx) {
+                    warn!("Transaction already disputed: {:?}", tr);
+                    return;
+                }
                 if let Some(amount) = original_tr.amount {
                     client.available -= amount;
                     client.held += amount;
@@ -81,6 +91,10 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
         }
         "resolve" => {
             if let Some(original_tr) = processed_transactions.get(&tr.tx) {
+                if original_tr.client != tr.client {
+                    warn!("Resolve transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                    return;
+                }   
                 if !disputed_transactions.contains(&tr.tx) {
                     warn!("Resolve on non-disputed transaction: {:?}", tr);
                     return;
@@ -94,6 +108,28 @@ fn process_transaction(tr: &Transaction, clients: &mut HashMap<ClientID, Client>
                 }
             } else {
                 warn!("Resolve on unknown transaction: {:?}", tr);
+            }
+        }
+        "chargeback" => {
+            if let Some(original_tr) = processed_transactions.get(&tr.tx) {
+                if original_tr.client != tr.client {
+                    warn!("Chargeback transaction client mismatch: {:?}, {:?}", tr, original_tr);
+                    return;
+                }
+                if !disputed_transactions.contains(&tr.tx) {
+                    warn!("Chargeback on non-disputed transaction: {:?}", tr);
+                    return;
+                }
+                if let Some(amount) = original_tr.amount {
+                    client.held -= amount;
+                    client.total -= amount;
+                    client.locked = true;
+                    disputed_transactions.remove(&tr.tx);
+                } else {
+                    warn!("Chargeback on transaction without amount: {:?}, {:?}", tr, original_tr);
+                }
+            } else {
+                warn!("Chargeback on unknown transaction: {:?}", tr);
             }
         }
         _ => {
@@ -120,7 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for result in rdr.deserialize::<Transaction>() {
         let tr: Transaction = result?;
         process_transaction(&tr, &mut clients, &processed_transactions, &mut disputed_transactions);
-        processed_transactions.insert(tr.tx, tr);
+        if tr.tr_type == "deposit" || tr.tr_type == "withdrawal" {
+            processed_transactions.insert(tr.tx, tr);
+        }
     }
 
     let mut wtr = csv::Writer::from_writer(std::io::stdout());
